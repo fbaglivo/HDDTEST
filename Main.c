@@ -8,18 +8,23 @@
 #include "sgio.h"
 #include <sys/stat.h>
 
+
+
+
 int check_WDC_drive(void);
 int VSC_enable(void);
 int VSC_disable(void);
-int VSC_send_key(char, char);
+int VSC_send_key(char, int);
 int VSC_send_write_key(char);
-int VSC_send_read_key(char);
+int VSC_send_read_key(int);
 int handleChecksum(char *, int);
 void cleanup(void);
 void show_version(void);
 void show_usage(void);
-int VSC_get_mod1sec (unsigned int *sectors);
-int VSC_read_mod1_data(unsigned char mod32sec, int mod32len);
+int VSC_get_mod1sec (unsigned int* );
+int VSC_read_mod1_data(unsigned char , int);
+int VSC_read_allmod_data(unsigned char , int );
+int myreadmodule(struct ata_tf ,unsigned short,unsigned short );
 
 int prefer_ata12=0;
 int verbose=0;
@@ -132,10 +137,12 @@ int VSC_disable() {
 }
 
 /* Vendor Specific Commands sendkey for Mod 32h */
-int VSC_send_key(char rw, char nmod) {
+int VSC_send_key(char rw, int nmod) {
    int err=0;
    char buffer[512];
    struct ata_tf tf;
+   char lnmod=0, hnmod=0;
+   unsigned short temp=0;
 
    tf_init(&tf, ATA_OP_SMART, 0, 0);
    tf.lob.feat = 0xd6;
@@ -145,12 +152,20 @@ int VSC_send_key(char rw, char nmod) {
    tf.lob.lbah = 0xc2;
    tf.dev = 0xa0;
 
-      printf("modnum : %x\n", nmod);
+   printf("modnum : %x\n", nmod);
+
+   lnmod=(char)nmod;
+   temp=nmod>>8;
+   hnmod=(char)temp;
 
    memset(buffer,0,sizeof(buffer));
    buffer[0]=0x08;
    buffer[2]=rw;
-   buffer[4]=nmod;
+   buffer[5]=hnmod;
+   buffer[4]=lnmod;
+
+   printf("\n\nlow: %x high: %x temp: %x \n\n",lnmod,hnmod,temp);
+
 
    if(sg16(fd, SG_WRITE, SG_PIO, &tf, buffer, 512, 5)) {
       err = errno;
@@ -167,7 +182,7 @@ int VSC_send_write_key(char modnum) {
    return VSC_send_key(VSC_KEY_WRITE, modnum);
 }
 
-int VSC_send_read_key(char modnum) {
+int VSC_send_read_key(int modnum) {
    if (verbose)
       printf("Sending READ key\n");
    return VSC_send_key(VSC_KEY_READ, modnum);
@@ -318,7 +333,7 @@ int VSC_read_mod1_data(unsigned char mod1sec, int mod1len) {
    fwrite(buffer, 1, mod1len, fp);
    fclose(fp);
 
-   total_records=buffer[0x30];
+   total_records=buffer[0x31]<<8 | buffer[0x30]  ;
    printf("\n There are %d records \n ", total_records);
    register_lenght=buffer[offset];
    printf("\n Records Lenght is: 0x%x \n ", register_lenght);
@@ -349,10 +364,127 @@ int VSC_read_mod1_data(unsigned char mod1sec, int mod1len) {
 }
 
 
+int VSC_read_allmod_data(unsigned char mod1sec, int mod1len) {
+
+   int err=0;
+   int t=0;
+   int offset=0x32;
+   int total_records=0;
+   int register_lenght=0;
+   unsigned char module_id_l=0;
+   unsigned char module_id_h=0;
+   unsigned char module_size_l=0;
+   unsigned char module_init_l=0;
+   unsigned char module_size_h=0;
+   unsigned char module_init_h=0;
+
+   unsigned short   module_id=0;
+   unsigned short   module_size=0;
+   unsigned short   module_init=0;
+   unsigned short   real_module_size=0;
+
+
+
+   char buffer[mod1len];
+   struct ata_tf tf;
+
+
+
+   if (verbose)
+      printf("Getting Mod1h contents\n");
+
+   tf_init(&tf, ATA_OP_SMART, 0, 0);
+   tf.lob.feat = 0xd5;
+   tf.lob.nsect = mod1sec;
+   tf.lob.lbal = 0xbf;
+   tf.lob.lbam = 0x4f;
+   tf.lob.lbah = 0xc2;
+   tf.dev = 0xa0;
+
+   memset(buffer,0,sizeof(buffer));
+
+   if(sg16(fd, SG_READ, SG_PIO, &tf, buffer, mod1len, 5)) {
+      err = errno;
+      perror("sg16(VSC_GET_MOD32) failed");
+      return err;
+   }
+
+
+   total_records=buffer[0x31]<<8 | buffer[0x30]  ;
+   register_lenght=buffer[offset];
+
+   for (t=1;t<total_records;t++){
+
+
+	   module_id_l=buffer[offset+2+(t-1)*register_lenght];
+	   module_size_l=buffer[offset+4+(t-1)*register_lenght];
+	   module_init_l= buffer[offset+10+(t-1)*register_lenght];
+	   module_id_h=buffer[offset+3+(t-1)*register_lenght];
+	   module_size_h=buffer[offset+5+(t-1)*register_lenght];
+	   module_init_h= buffer[offset+11+(t-1)*register_lenght];
+
+
+	   module_id= (module_id_h << 8 ) | (module_id_l);
+	   module_size= (module_size_h << 8 ) | (module_size_l);
+	   module_init= (module_init_h << 8 ) | (module_init_l);
+
+
+	   printf("\n %d    %d    %d      \n ", module_id, module_size, module_init);
+	   // CHEQUEAR COMO HACER EL BUFFER DE TAMAÑO VARIABLE
+
+	   tf_init(&tf, ATA_OP_SMART, 0, 0);
+	   tf.lob.feat = 0xd5;
+	   tf.lob.nsect = module_size;
+	   tf.lob.lbal = 0xbf;
+	   tf.lob.lbam = 0x4f;
+	   tf.lob.lbah = 0xc2;
+	   tf.dev = 0xa0;
+
+	 // if (module_id<0xFF)
+	   //{
+		   if (VSC_send_read_key((int)module_id)!=0)
+
+			   exit(1);
+
+		   real_module_size=BYTES_PER_SECTOR*module_size;
+		   myreadmodule(tf,real_module_size,module_id);
+	   	//}
+
+
+
+   }
+
+   return 0;
+}
+
+
+int myreadmodule(struct ata_tf tf,  unsigned short  module_size, unsigned short module_id)
+
+{
+	  char buf=10;
+	  int err=0;
+	  char buffer[module_size];
+
+ 	   if(sg16(fd, SG_READ, SG_PIO, &tf, buffer,(int)module_size, 5)) {
+	 	        err = errno;
+	 	        perror("xxxsg16(VSC_GET_) failed");
+	 	        return err;
+	 	     }
+
+ 	  char str[10];
+ 	  snprintf(str, 10, "%s%x%s","mod",module_id,".bin");
+ 	  fp=fopen(str, "wb");
+ 	  fwrite(buffer, sizeof(char),module_size, fp);
+ 	  fclose(fp);
+
+ 	   printf("\n OK");
+ 	   return 0;
+}
+
 
 int main(int argc, char **argv) {
 
-	int i=1;
+       int i=1;
 	   unsigned int mod1sec;
 	   unsigned int mod1len=0;
 
@@ -432,6 +564,12 @@ int main(int argc, char **argv) {
 	                     else
 	                        printf("MOD1 length is %d (0x%x)\n\n", mod1len, mod1len);
 
+            if (VSC_send_read_key(MOD1)!=0)
+               	                        exit(1);
+
+
+	         if (VSC_read_allmod_data(mod1sec, mod1len)!=0)
+	           	                         exit(1);
 
 	         VSC_disable();
 
